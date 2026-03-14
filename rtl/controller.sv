@@ -25,25 +25,25 @@ module controller #(
     output logic [ADDR_I_W-1:0]     instr_addr,
     input  logic [INSTR_W-1:0]      instr_dout,
 
-    // Data memory A read interface
-    output logic [ADDR_A_W-1:0]     addrA_r,
-    input  logic [DATA_W-1:0]       dataA_r,
+    // Data memory A read interface (N addresses/data per cycle for skew feed)
+    output logic [ADDR_A_W-1:0]     addrA_r [0:N-1],
+    input  logic [DATA_W-1:0]       dataA_r [0:N-1],
 
-    // Data memory B read interface
-    output logic [ADDR_B_W-1:0]     addrB_r,
-    input  logic [DATA_W-1:0]       dataB_r,
+    // Data memory B read interface (N addresses/data per cycle for skew feed)
+    output logic [ADDR_B_W-1:0]     addrB_r [0:N-1],
+    input  logic [DATA_W-1:0]       dataB_r [0:N-1],
 
     // Result memory O write interface
     output logic [ADDR_O_W-1:0]     addrO_w,
     output logic [DATA_W-1:0]       dataO_w,
     output logic                    weO,
 
-    // Interface to systolic array
+    // Interface to systolic array (N A values on west edge, N B values on north edge)
     output logic                    sa_start,
     output logic                    sa_clear,
     input  logic                    sa_done,
-    output logic [DATA_W-1:0]       sa_in_a,
-    output logic [DATA_W-1:0]       sa_in_b,
+    output logic [DATA_W-1:0]       sa_in_a [0:N-1],
+    output logic [DATA_W-1:0]       sa_in_b [0:N-1],
     input  logic [ACC_W-1:0]        sa_out_data,
     input  logic                    sa_out_valid
 );
@@ -74,6 +74,7 @@ module controller #(
     logic [ADDR_O_W-1:0] out_cnt;
     logic [ADDR_O_W-1:0] baseO;
     localparam int N_SQ = N * N;
+    localparam int FEED_CYCLES = 2 * N - 1;  // skew feed cycles for NxN systolic
 
     // ------------------------------------------------------------------------
     // Sequential state/register updates
@@ -145,15 +146,17 @@ module controller #(
 
         // Default memory and systolic array controls
         instr_addr = instr_ptr;
-        addrA_r    = '0;
-        addrB_r    = '0;
+        for (int i = 0; i < N; i++) begin
+            addrA_r[i] = '0;
+            addrB_r[i] = '0;
+            sa_in_a[i] = '0;
+            sa_in_b[i] = '0;
+        end
         addrO_w    = '0;
         dataO_w    = '0;
         weO        = 1'b0;
         sa_start   = 1'b0;
         sa_clear   = 1'b0;
-        sa_in_a    = '0;
-        sa_in_b    = '0;
 
         unique case (state)
             S_IDLE: begin
@@ -186,23 +189,34 @@ module controller #(
             S_LOAD: begin
                 sa_clear = 1'b1;
                 sa_start = 1'b1;
-                addrA_r  = '0;
-                addrB_r  = '0;
+                for (int i = 0; i < N; i++) begin
+                    addrA_r[i] = '0;
+                    addrB_r[i] = '0;
+                end
                 next_state = S_RUN;
             end
 
             S_RUN: begin
-                // Feed A row-major, B column-major for NxN tile (indices 0 .. N²-1)
-                addrA_r = run_cnt;
-                addrB_r = (run_cnt % N) * N + (run_cnt / N);
+                // True NxN systolic skew: at cycle t, row r gets A[r][t-r], col c gets B[t-c][c]
+                // Feed for FEED_CYCLES = 2*N-1; then zeros so drain does not accumulate garbage
                 sa_start = 1'b1;
-                // Stop feeding after N² cycles so drain phase does not accumulate garbage
-                if (run_cnt < N_SQ) begin
-                    sa_in_a = dataA_r;
-                    sa_in_b = dataB_r;
-                end else begin
-                    sa_in_a = '0;
-                    sa_in_b = '0;
+                for (int r = 0; r < N; r++) begin
+                    if (run_cnt >= r && run_cnt < r + N) begin
+                        addrA_r[r] = r * N + (run_cnt - r);  // A[r][t-r] row-major
+                        sa_in_a[r] = dataA_r[r];
+                    end else begin
+                        addrA_r[r] = '0;
+                        sa_in_a[r] = '0;
+                    end
+                end
+                for (int c = 0; c < N; c++) begin
+                    if (run_cnt >= c && run_cnt < c + N) begin
+                        addrB_r[c] = (run_cnt - c) + c * N;  // B[t-c][c] at row+(col*N) col-major
+                        sa_in_b[c] = dataB_r[c];
+                    end else begin
+                        addrB_r[c] = '0;
+                        sa_in_b[c] = '0;
+                    end
                 end
                 // Write each valid output to O as it drains
                 if (sa_out_valid) begin

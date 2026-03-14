@@ -112,16 +112,20 @@ module top #(
     end
 
     // ------------------------------------------------------------------------
-    // Controller read ports: A, B, I (combinational read from memories)
+    // Controller read ports: A, B (N addresses per cycle for skew), I (single)
     // ------------------------------------------------------------------------
-    logic [ADDR_A_W-1:0] addrA_r;
-    logic [ADDR_B_W-1:0] addrB_r;
+    logic [ADDR_A_W-1:0] addrA_r [0:N-1];
+    logic [ADDR_B_W-1:0] addrB_r [0:N-1];
     logic [ADDR_I_W-1:0] instr_addr;
-    logic [DATA_W-1:0]   dataA_r, dataB_r;
+    logic [DATA_W-1:0]   dataA_r [0:N-1], dataB_r [0:N-1];
     logic [INSTR_W-1:0]  instr_dout;
 
-    assign dataA_r    = memA[addrA_r];
-    assign dataB_r    = memB[addrB_r];
+    always_comb begin
+        for (int i = 0; i < N; i++) begin
+            dataA_r[i] = memA[addrA_r[i]];
+            dataB_r[i] = memB[addrB_r[i]];
+        end
+    end
     assign instr_dout = memI[instr_addr];
 
     // ------------------------------------------------------------------------
@@ -138,10 +142,10 @@ module top #(
     end
 
     // ------------------------------------------------------------------------
-    // Systolic array <-> controller signals
+    // Systolic array <-> controller signals (N-wide A and B inputs)
     // ------------------------------------------------------------------------
     logic        sa_start, sa_clear, sa_done, sa_out_valid;
-    logic [DATA_W-1:0] sa_in_a, sa_in_b;
+    logic [DATA_W-1:0] sa_in_a [0:N-1], sa_in_b [0:N-1];
     logic [ACC_W-1:0]  sa_out_data;
 
     // ------------------------------------------------------------------------

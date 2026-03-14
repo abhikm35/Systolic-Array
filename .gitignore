@@ -1,0 +1,15 @@
+# Build artifacts
+build/
+
+# Generated test data
+tb/data/*.hex
+tb/data/*.txt
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Editor files
+*.swp
+*~
+.DS_Store

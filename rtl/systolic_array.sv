@@ -9,9 +9,9 @@ module systolic_array #(
     input  logic              clear,        // from controller (sa_clear)
     input  logic              start,        // from controller (sa_start)
 
-    // Streams from controller / memories
-    input  logic [DATA_W-1:0] sa_in_a,      // A values (west edge)
-    input  logic [DATA_W-1:0] sa_in_b,      // B values (north edge)
+    // Streams from controller / memories (one per row/column for true NxN skew feed)
+    input  logic [DATA_W-1:0] sa_in_a [0:N-1],   // A values at west edge, row r
+    input  logic [DATA_W-1:0] sa_in_b [0:N-1],   // B values at north edge, col c
 
     // Results back to controller
     output logic [ACC_W-1:0]  sa_out_data,  // C elements
@@ -77,9 +77,8 @@ module systolic_array #(
     assign sa_out_data = acc_grid[out_row][out_col];
 
     // ------------------------------------------------------------------------
-    // Drive west and north edges from sa_in_a / sa_in_b (simple version)
+    // Drive west and north edges: row r gets sa_in_a[r], col c gets sa_in_b[c]
     // ------------------------------------------------------------------------
-    // For now, we only feed row 0 and column 0; other entries are 0.
     integer r, c;
     always_comb begin
         // Default all buses to zero
@@ -93,10 +92,9 @@ module systolic_array #(
                 b_bus[r][c] = '0;
             end
         end
-
-        // Inject one A stream at left of row 0 and one B stream at top of col 0
-        a_bus[0][0] = sa_in_a;
-        b_bus[0][0] = sa_in_b;
+        // True NxN feed: west edge of row r, north edge of col c
+        for (r = 0; r < N; r++) a_bus[r][0] = sa_in_a[r];
+        for (c = 0; c < N; c++) b_bus[0][c] = sa_in_b[c];
     end
 
     // ------------------------------------------------------------------------

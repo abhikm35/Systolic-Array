@@ -100,6 +100,7 @@ module tb_top;
     // -------------------------------------------------------------------------
     int load_addr;
     int err_count;
+    logic done_loading_I;
 
     initial begin
         ap_start = 0;
@@ -107,6 +108,7 @@ module tb_top;
         addrA = '0; addrB = '0; addrI = '0; addrO = '0;
         dataA = '0; dataB = '0; dataI = '0;
         err_count = 0;
+        done_loading_I = 0;
 
         @(posedge rst_n);
         repeat (2) @(posedge clk);
@@ -130,12 +132,15 @@ module tb_top;
         @(posedge clk); enB = 0;
 
         // ----- Load instruction memory (a, b, c, 0) -----
-        for (load_addr = 0; load_addr < DEPTH_I; load_addr++) begin
+        done_loading_I = 0;
+        for (load_addr = 0; load_addr < DEPTH_I && !done_loading_I; load_addr++) begin
             @(posedge clk);
             addrI = load_addr;
             dataI = memI_file[load_addr];
             enI   = 1;
-            if (memI_file[load_addr] == 0) break;  // stop after terminator
+            if (memI_file[load_addr] == 0) begin
+                done_loading_I = 1;
+            end
         end
         @(posedge clk); enI = 0;
 
