@@ -26,12 +26,14 @@ Small educational **NxN fixed‑point systolic array accelerator** for matrix–
 2. **Choose a simulator**
    - Any SystemVerilog‑capable simulator should work (Xcelium, VCS, Questa, Verilator, etc.).
 
-3. **Compile and run** (example)
-   - Compile `rtl/top.sv` together with your testbench (for example `tb/tb_top.sv` once implemented).
-   - In the testbench, preload `memA`, `memB`, and `memI`, pulse `ap_start`, wait for `ap_done`, then read `memO`.
+3. **Generate test data and golden reference** (Python)
+   - Run `python3 scripts/gen_test_data.py` from the project root.
+   - This creates `tb/data/memA.hex`, `memB.hex`, `memI.hex`, and `golden_O.hex` for the testbench to load.
 
-4. **Compare against a golden model**
-   - Use Python (NumPy) or MATLAB scripts to generate random fixed‑point matrices and expected MMM results.
+4. **Compile and run simulation**
+   - Compile all RTL and the testbench: `rtl/top.sv`, `rtl/controller.sv`, `rtl/systolic_array.sv`, `rtl/pe.sv`, and `tb/tb_top.sv`.
+   - Run with the simulator's working directory set to the project root (so paths like `tb/data/memA.hex` resolve).
+   - The testbench loads the hex files, drives the DUT, and compares `memO` output to `golden_O.hex`; it reports **PASS** or **FAIL**.
 
 ---
 
@@ -44,24 +46,24 @@ The design is organized into four conceptual blocks:
   - Each PE performs **16‑bit fixed‑point multiply‑accumulate (MAC)**.
   - Input activations and weights are streamed from orthogonal directions and accumulated as they propagate.
 
-- **On‑Chip Memories**
+- **On‑Chip Memories** (inferred synchronous RAM in `top.sv`)
   - `memA`: Input matrix \(A\) (size up to `DEPTH_A` words of width `DATA_W`).
   - `memB`: Weight matrix \(B\) (size up to `DEPTH_B`).
   - `memO`: Output matrix \(O\) (size up to `DEPTH_O`).
   - `memI`: Instruction memory for the MMM instruction stream (depth `DEPTH_I`, width `INSTR_W`).
+  - Implemented as arrays and `always_ff` in `top.sv`; no separate memory modules.
 
-- **Instruction Controller** (to be extended)
+- **Instruction Controller** (`rtl/controller.sv`)
   - Reads instructions from `memI`.
   - Decodes integer triples **[a, b, c]** that describe one matrix–matrix multiply:
     - Input matrix:  \(a \times b\)
     - Weight matrix: \(b \times c\)
     - Output matrix: \(a \times c\)
-  - Sequences reads from `memA` and `memB`, streams tiles into the systolic array, and writes results into `memO`.
+  - Sequences reads from `memA` and `memB`, streams data into the systolic array, and writes results into `memO`.
   - Supports chained MMMs (e.g., instruction sequence `[32, 16, 64, 8, 16, 0]`) to model small multi‑layer MLPs.
 
 - **Top‑Level Wrapper (`rtl/top.sv`)**
-  - Instantiates data and instruction memories.
-  - Will instantiate the controller and systolic array core.
+  - Instantiates the controller and systolic array core and wires them to the internal memories.
   - Provides a clean external interface for integration with a CPU or testbench.
 
 ---
@@ -141,44 +143,43 @@ This models a small 3‑layer MLP with matrix multiplies back‑to‑back.
 
 ## Testbench & Workload Generation
 
-Although a full testbench is still under construction, the intended verification flow is:
+Verification uses a **Python** script for stimulus and golden data, and a **SystemVerilog testbench** that loads those files and compares results.
 
-- **Stimulus Generation**
-  - Use **Python** or **MATLAB** to generate random fixed‑point matrices for \(A\), \(B\), and instruction sequences.
-  - Quantize floating‑point data to 16‑bit fixed point to match `DATA_W`.
+- **Python script** (`scripts/gen_test_data.py`)
+  - Generates random 16‑bit fixed‑point matrices \(A\) and \(B\), and an instruction stream (e.g. `[N, N, N, 0]`).
+  - Computes the golden output \(C = A \times B\) with NumPy and writes it to `golden_O.hex`.
+  - Writes `memA.hex`, `memB.hex`, `memI.hex`, and `golden_O.hex` into `tb/data/` (one 16‑bit hex value per line for `$readmemh`).
 
-- **Golden Model**
-  - Use numpy/MATLAB to compute expected MMM results and chained GEMM sequences.
-  - Compare the RTL outputs in `memO` against the golden results sample‑by‑sample.
+- **SystemVerilog testbench** (`tb/tb_top.sv`)
+  - Loads the hex files with `$readmemh("tb/data/memA.hex", ...)` (and similarly for B, I, and golden_O).
+  - Writes A, B, and I into the DUT via the top‑level ports, pulses `ap_start`, waits for `ap_done`.
+  - Reads `memO` via `addrO`/`dataO` and compares each word to the golden file; reports **PASS** or **FAIL**.
 
-- **SystemVerilog Testbench**
-  - Write testbench code to:
-    - Drive writes into `memA`, `memB`, and `memI` through the top‑level ports.
-    - Pulse `ap_start`, wait for `ap_done`.
-    - Read back `memO` via `addrO`/`dataO` and compare to the golden model.
+See `tb/README.md` for run commands and simulator notes.
 
 ---
 
 ## Simulation
 
-This project is simulator‑agnostic and should work with any modern **SystemVerilog** simulator (e.g., Cadence Xcelium, Synopsys VCS, Mentor Questa, or Verilator with appropriate flags).
+This project is simulator‑agnostic and should work with any modern **SystemVerilog** simulator (e.g., Cadence Xcelium, Synopsys VCS, Mentor Questa, Icarus Verilog, or Verilator with appropriate flags).
 
-General steps:
+1. **Generate test data** (from project root)
+   ```bash
+   python3 scripts/gen_test_data.py
+   ```
 
-1. **Compile**
-   - Include all relevant RTL and testbench files, for example:
-     - `rtl/top.sv`
-     - `tb/tb_top.sv` (when implemented)
+2. **Compile**
+   - Include all RTL and the testbench:
+     - `rtl/top.sv`, `rtl/controller.sv`, `rtl/systolic_array.sv`, `rtl/pe.sv`
+     - `tb/tb_top.sv`
 
-2. **Run**
-   - Load the generated hex/binary/vector files for matrices and instructions.
-   - Run simulation until `ap_done` asserts.
+3. **Run**
+   - Set the simulator's working directory to the project root so that paths like `tb/data/memA.hex` resolve.
+   - Run until the testbench finishes; it will print `[TB] PASS` or `[TB] FAIL` and any mismatches.
 
-3. **Inspect Results**
+4. **Inspect results** (optional)
    - Dump waveforms (e.g., VCD/FSDB) if desired.
-   - Compare memory `memO` contents against the golden model.
-
-Please adapt the exact compile/run commands to your simulator of choice.
+   - See `docs/RUN_WALKTHROUGH.md` for a step‑by‑step trace of data flow with file and line references.
 
 ---
 
@@ -198,11 +199,18 @@ Some extensions and TODOs:
 
 ## Repository Layout
 
-- `rtl/`
-  - Core RTL, including `top.sv` for the NxN systolic array accelerator.
-- `tb/`
-  - SystemVerilog testbench files (e.g., `tb_top.sv`).
-- `scripts/`
-  - Placeholder for Python/MATLAB scripts to generate fixed‑point inputs, instructions, and golden results.
+- **`rtl/`** — Core RTL
+  - `top.sv`: Top-level wrapper; internal memories (memA, memB, memO, memI), controller, and systolic array.
+  - `controller.sv`: FSM that fetches instructions, drives A/B reads, feeds the array, and writes O.
+  - `systolic_array.sv`: N×N PE grid with feed/drain logic and output collection.
+  - `pe.sv`: Single processing element (MAC and pass-through).
+- **`tb/`** — Testbench
+  - `tb_top.sv`: Loads Python-generated hex files, drives the DUT, compares output to golden.
+  - `data/`: Generated by `scripts/gen_test_data.py` (memA.hex, memB.hex, memI.hex, golden_O.hex).
+  - `README.md`: How to run the testbench and simulators.
+- **`scripts/`** — Python
+  - `gen_test_data.py`: Generates test matrices, instruction stream, and golden output; writes hex files to `tb/data/`.
+- **`docs/`** — Documentation
+  - `RUN_WALKTHROUGH.md`: End-to-end run description with a concrete matrix example and file/line references.
 
 ---

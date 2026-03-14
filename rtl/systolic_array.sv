@@ -35,6 +35,48 @@ module systolic_array #(
     logic [ACC_W-1:0]  acc_grid [0:N-1][0:N-1];
 
     // ------------------------------------------------------------------------
+    // Cycle counter and output drain: feed for (2*N-1) cycles, then drain N^2 results
+    // ------------------------------------------------------------------------
+    localparam int FEED_CYCLES = 2 * N - 1;
+    localparam int DRAIN_CYCLES = N * N;
+    localparam int TOTAL_CYCLES = FEED_CYCLES + DRAIN_CYCLES;
+
+    logic [$clog2(TOTAL_CYCLES+1)-1:0] cycle_cnt;
+    logic [$clog2(N*N)-1:0]            out_idx;
+    logic                               running;
+    logic                               drain_phase;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            cycle_cnt <= '0;
+            out_idx   <= '0;
+            running   <= 1'b0;
+        end else if (clear) begin
+            cycle_cnt <= '0;
+            out_idx   <= '0;
+            running   <= 1'b0;
+        end else if (start && !running) begin
+            running   <= 1'b1;
+            cycle_cnt <= '0;
+        end else if (running) begin
+            cycle_cnt <= cycle_cnt + 1;
+            if (drain_phase && (out_idx < DRAIN_CYCLES)) begin
+                out_idx <= out_idx + 1;
+            end
+        end
+    end
+
+    assign drain_phase = running && (cycle_cnt >= FEED_CYCLES);
+    assign sa_out_valid = drain_phase && (out_idx < DRAIN_CYCLES);
+    assign sa_done      = running && (cycle_cnt >= TOTAL_CYCLES - 1);
+
+    // Row-major output: out_idx = row*N + col -> row = out_idx / N, col = out_idx % N
+    logic [$clog2(N)-1:0] out_row, out_col;
+    assign out_row = out_idx / N;
+    assign out_col = out_idx % N;
+    assign sa_out_data = acc_grid[out_row][out_col];
+
+    // ------------------------------------------------------------------------
     // Drive west and north edges from sa_in_a / sa_in_b (simple version)
     // ------------------------------------------------------------------------
     // For now, we only feed row 0 and column 0; other entries are 0.
@@ -81,13 +123,5 @@ module systolic_array #(
             end
         end
     endgenerate
-
-    // ------------------------------------------------------------------------
-    // TODO: Output collection logic
-    // For now, just expose acc_grid[0][0] as a placeholder.
-    // ------------------------------------------------------------------------
-    assign sa_out_data  = acc_grid[0][0];
-    assign sa_out_valid = 1'b0;
-    assign sa_done      = 1'b0;
 
 endmodule

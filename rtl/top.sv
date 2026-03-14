@@ -5,8 +5,12 @@
 //  - Reading the output matrix O
 
 module top #(
+    // Systolic array size (NxN PEs)
+    parameter int N        = 4,
     // Data width for matrix elements (16-bit fixed point)
     parameter int DATA_W   = 16,
+    // Accumulator width in PEs
+    parameter int ACC_W    = 32,
     // Instruction width (integer dimensions a, b, c, ...)
     parameter int INSTR_W  = 16,
 
@@ -96,7 +100,7 @@ module top #(
     end
 
     // ------------------------------------------------------------------------
-    // Result memory read port for O
+    // Result memory read port for O (external)
     // ------------------------------------------------------------------------
 
     always_ff @(posedge clk) begin
@@ -108,16 +112,90 @@ module top #(
     end
 
     // ------------------------------------------------------------------------
-    // Controller + systolic array instances (to be implemented)
+    // Controller read ports: A, B, I (combinational read from memories)
     // ------------------------------------------------------------------------
+    logic [ADDR_A_W-1:0] addrA_r;
+    logic [ADDR_B_W-1:0] addrB_r;
+    logic [ADDR_I_W-1:0] instr_addr;
+    logic [DATA_W-1:0]   dataA_r, dataB_r;
+    logic [INSTR_W-1:0]  instr_dout;
 
-    // TODO:
-    //  - Add a controller module that:
-    //      * Reads instructions from memI
-    //      * Drives read addresses into memA, memB
-    //      * Streams data into systolic_array
-    //      * Writes results into memO
-    //      * Asserts ap_done when all MMMs are finished
-    //  - Add a systolic_array module that performs NxN MAC operations
+    assign dataA_r    = memA[addrA_r];
+    assign dataB_r    = memB[addrB_r];
+    assign instr_dout = memI[instr_addr];
+
+    // ------------------------------------------------------------------------
+    // Controller write port for O (writes results during S_RUN when sa_out_valid)
+    // ------------------------------------------------------------------------
+    logic [ADDR_O_W-1:0] addrO_w;
+    logic [DATA_W-1:0]   dataO_w;
+    logic                weO;
+
+    always_ff @(posedge clk) begin
+        if (rst_n && weO) begin
+            memO[addrO_w] <= dataO_w;
+        end
+    end
+
+    // ------------------------------------------------------------------------
+    // Systolic array <-> controller signals
+    // ------------------------------------------------------------------------
+    logic        sa_start, sa_clear, sa_done, sa_out_valid;
+    logic [DATA_W-1:0] sa_in_a, sa_in_b;
+    logic [ACC_W-1:0]  sa_out_data;
+
+    // ------------------------------------------------------------------------
+    // Controller instance
+    // ------------------------------------------------------------------------
+    controller #(
+        .N        (N),
+        .DATA_W   (DATA_W),
+        .ACC_W    (ACC_W),
+        .INSTR_W  (INSTR_W),
+        .ADDR_A_W (ADDR_A_W),
+        .ADDR_B_W (ADDR_B_W),
+        .ADDR_O_W (ADDR_O_W),
+        .ADDR_I_W (ADDR_I_W)
+    ) u_controller (
+        .clk        (clk),
+        .rst_n      (rst_n),
+        .ap_start   (ap_start),
+        .ap_done    (ap_done),
+        .instr_addr (instr_addr),
+        .instr_dout (instr_dout),
+        .addrA_r    (addrA_r),
+        .dataA_r    (dataA_r),
+        .addrB_r    (addrB_r),
+        .dataB_r    (dataB_r),
+        .addrO_w    (addrO_w),
+        .dataO_w    (dataO_w),
+        .weO        (weO),
+        .sa_start   (sa_start),
+        .sa_clear   (sa_clear),
+        .sa_done    (sa_done),
+        .sa_in_a    (sa_in_a),
+        .sa_in_b    (sa_in_b),
+        .sa_out_data(sa_out_data),
+        .sa_out_valid(sa_out_valid)
+    );
+
+    // ------------------------------------------------------------------------
+    // Systolic array instance
+    // ------------------------------------------------------------------------
+    systolic_array #(
+        .N      (N),
+        .DATA_W (DATA_W),
+        .ACC_W  (ACC_W)
+    ) u_systolic_array (
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .clear       (sa_clear),
+        .start       (sa_start),
+        .sa_in_a     (sa_in_a),
+        .sa_in_b     (sa_in_b),
+        .sa_out_data (sa_out_data),
+        .sa_out_valid(sa_out_valid),
+        .sa_done     (sa_done)
+    );
 
 endmodule

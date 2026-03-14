@@ -6,7 +6,9 @@
 // - Raises ap_done when all MMMs are finished
 
 module controller #(
+    parameter int N        = 4,       // systolic array size (a=b=c=N for one MMM tile)
     parameter int DATA_W   = 16,
+    parameter int ACC_W    = 32,      // accumulator width from systolic array
     parameter int INSTR_W  = 16,
     parameter int ADDR_A_W = 11,
     parameter int ADDR_B_W = 11,
@@ -42,7 +44,7 @@ module controller #(
     input  logic                    sa_done,
     output logic [DATA_W-1:0]       sa_in_a,
     output logic [DATA_W-1:0]       sa_in_b,
-    input  logic [DATA_W-1:0]       sa_out_data,
+    input  logic [ACC_W-1:0]        sa_out_data,
     input  logic                    sa_out_valid
 );
 
@@ -67,7 +69,11 @@ module controller #(
     logic [INSTR_W-1:0] a_reg, b_reg, c_reg;
     logic [ADDR_I_W-1:0] instr_ptr;
 
-    // TODO: add counters for addresses into A, B, and O memories
+    // Counters for feed (S_RUN) and write-back; base address for O in current MMM
+    logic [ADDR_A_W-1:0] run_cnt;
+    logic [ADDR_O_W-1:0] out_cnt;
+    logic [ADDR_O_W-1:0] baseO;
+    localparam int N_SQ = N * N;
 
     // ------------------------------------------------------------------------
     // Sequential state/register updates
@@ -80,6 +86,9 @@ module controller #(
             a_reg      <= '0;
             b_reg      <= '0;
             c_reg      <= '0;
+            run_cnt    <= '0;
+            out_cnt    <= '0;
+            baseO      <= '0;
         end else begin
             state <= next_state;
 
@@ -98,9 +107,29 @@ module controller #(
                 instr_ptr <= instr_ptr + 1;   // point to next triple
             end
 
-            // Optional: reset instruction pointer when we go back to IDLE
+            // S_LOAD: reset run and output counters
+            if (state == S_LOAD && next_state == S_RUN) begin
+                run_cnt <= '0;
+                out_cnt <= '0;
+            end
+
+            // S_RUN: advance run counter each cycle; advance out_cnt when we write an output
+            if (state == S_RUN) begin
+                run_cnt <= run_cnt + 1;
+                if (sa_out_valid) begin
+                    out_cnt <= out_cnt + 1;
+                end
+            end
+
+            // After write-back, advance baseO for next MMM (a_reg*c_reg elements)
+            if (state == S_WRITE_BACK && next_state == S_FETCH_A) begin
+                baseO <= ADDR_O_W'(baseO + (a_reg * c_reg));
+            end
+
+            // Reset instruction pointer and baseO when we go back to IDLE
             if (state == S_DONE && next_state == S_IDLE) begin
                 instr_ptr <= '0;
+                baseO     <= '0;
             end
         end
     end
@@ -155,31 +184,40 @@ module controller #(
             end
 
             S_LOAD: begin
-                // TODO: initialize address counters for A, B, and O
-                // and assert sa_clear if needed
-                addrA_r = 0;
-                addrB_r = 0;
-                addrO_w = 0;
-                dataO_w = 0;
-                weO = 1'b0;
                 sa_clear = 1'b1;
+                sa_start = 1'b1;
+                addrA_r  = '0;
+                addrB_r  = '0;
                 next_state = S_RUN;
             end
 
             S_RUN: begin
-                // TODO: drive sa_in_a / sa_in_b from dataA_r / dataB_r
-                // and generate read addresses addrA_r / addrB_r
+                // Feed A row-major, B column-major for NxN tile (indices 0 .. N²-1)
+                addrA_r = run_cnt;
+                addrB_r = (run_cnt % N) * N + (run_cnt / N);
+                sa_start = 1'b1;
+                // Stop feeding after N² cycles so drain phase does not accumulate garbage
+                if (run_cnt < N_SQ) begin
+                    sa_in_a = dataA_r;
+                    sa_in_b = dataB_r;
+                end else begin
+                    sa_in_a = '0;
+                    sa_in_b = '0;
+                end
+                // Write each valid output to O as it drains
+                if (sa_out_valid) begin
+                    weO     = 1'b1;
+                    addrO_w = baseO + out_cnt;
+                    dataO_w = sa_out_data[DATA_W-1:0];  // truncate accumulator to data width
+                end
                 if (sa_done) begin
-                    next_state = S_WRITE_BACK;               // When systolic array is done, move to S_WRITE_BACK;
+                    next_state = S_WRITE_BACK;
                 end
             end
 
             S_WRITE_BACK: begin
-                // TODO: iterate over outputs from systolic array
-                // and write them into memO using addrO_w/dataO_w/weO
-                // After all outputs written, either go back to S_FETCH
-                // for next MMM or to S_DONE if finished
-                next_state = S_DONE;
+                // All outputs were written during S_RUN; go fetch next (a,b,c) or finish
+                next_state = S_FETCH_A;
             end
 
             S_DONE: begin
